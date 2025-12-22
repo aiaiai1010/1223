@@ -280,6 +280,7 @@
     let bentState = false;
     let enterStart = null, exitStart  = null;
     let wasDown = false, wasUp = false, wasClose = false, wasFar = false;
+    let neckAngle = 0; // ★ 首の推定角度（度）
 
     // ★ 顔検出ロスト対策
     let faceLostStartTime = null;
@@ -579,6 +580,9 @@
       const prox = classifyProximity(sNoseZ);
       faceState.prox = prox;
 
+      // ★ 首の角度を計算
+      neckAngle = calculateNeckAngle();
+
       // スマホ角度も考慮した首曲がり最終判定
       const pitchAbs = Math.abs(sPitch);
       const isBentNow = isBent(faceState.dir, faceState.prox, pitchAbs);
@@ -587,13 +591,20 @@
       // デバッグ出力
       const combined = getCombinedForDebug();
       output.textContent =
+        `━━━ 首の推定角度 ━━━\n` +
+        `🔴 首の前傾角度: ${neckAngle.toFixed(1)}°\n` +
+        `\n` +
+        `━━━ センサー値 ━━━\n` +
         `Pitch: ${sPitch.toFixed(2)}°\n` +
         `Roll:  ${sRoll.toFixed(2)}°\n` +
         `yDiff(平滑): ${sYdiff.toFixed(4)}\n` +
         `noseZ(平滑): ${sNoseZ.toFixed(4)}\n` +
         `combined(y+z): ${combined.toFixed(4)}\n` +
+        `\n` +
+        `━━━ 判定結果 ━━━\n` +
         `顔向き: ${faceState.dir}\n` +
         `顔距離: ${faceState.prox}\n` +
+        `\n` +
         `[感度] 閾値:${PARAMS.pitchThreshold1}°/${PARAMS.pitchThreshold2}° 正面:${PARAMS.straightThreshold}° 向き:${PARAMS.dirSensitivity.toFixed(1)}x 距離:${PARAMS.proxSensitivity.toFixed(1)}x`;
 
       // ログ記録（1秒粒度）
@@ -612,6 +623,34 @@
         return (sYdiff - PARAMS.calibYdiff) + (sNoseZ - PARAMS.calibNoseZ);
       }
       return (sYdiff ?? 0) + (sNoseZ ?? 0);
+    }
+
+    // ★ 首の角度を計算（度）
+    function calculateNeckAngle() {
+      if (sYdiff == null || sNoseZ == null) return 0;
+
+      // 顔の向き成分（yDiff + noseZ）を取得
+      let combined;
+      if (PARAMS.calibYdiff != null && PARAMS.calibNoseZ != null) {
+        combined = (sYdiff - PARAMS.calibYdiff) + (sNoseZ - PARAMS.calibNoseZ);
+      } else {
+        combined = (sYdiff ?? 0) + (sNoseZ ?? 0);
+      }
+
+      // combined値を角度に変換（経験的な係数）
+      // 負の値 = 下向き（前傾）、正の値 = 上向き（後傾）
+      // combinedの変化量 0.1 ≈ 約30度の首の傾きに相当（経験則）
+      const neckTiltFromFace = -combined * 300; // 下向き時にプラスになるよう反転
+
+      // スマホの傾き（Pitch）を考慮
+      // スマホが寝ている（Pitch大）場合、首が曲がりやすい
+      const deviceTilt = Math.abs(sPitch);
+
+      // 総合的な首の角度を計算
+      // 顔の傾きを主とし、デバイスの傾きを補正として加える
+      const estimatedAngle = neckTiltFromFace + (deviceTilt * 0.3);
+
+      return estimatedAngle;
     }
 
     // ★ 顔向き：yDiff + noseZ で判定（ヒステリシス）★感度調整対応
@@ -952,6 +991,7 @@
         dir: faceState.dir,
         prox: faceState.prox,
         bent: !!bentState,
+        neckAngle: neckAngle, // ★ 首の角度を追加
         // ★ 感度設定もログに記録
         pitchThreshold1: PARAMS.pitchThreshold1,
         pitchThreshold2: PARAMS.pitchThreshold2,
@@ -982,7 +1022,7 @@
 
       const tx = db.transaction(STORE, 'readonly');
       const store = tx.objectStore(STORE);
-      const rows = [['ts','iso','day','hour','pitch','roll','y','z','dir','prox','bent','pitchThreshold1','pitchThreshold2','straightThreshold','dirSensitivity','proxSensitivity']];
+      const rows = [['ts','iso','day','hour','pitch','roll','y','z','dir','prox','bent','neckAngle','pitchThreshold1','pitchThreshold2','straightThreshold','dirSensitivity','proxSensitivity']];
       const req = store.openCursor();
       await new Promise((resolve, reject) => {
         req.onsuccess = (e) => {
@@ -1001,6 +1041,7 @@
             v.dir,
             v.prox,
             v.bent ? 1 : 0,
+            v.neckAngle?.toFixed?.(2) || 0,
             v.pitchThreshold1 || 30,
             v.pitchThreshold2 || 40,
             v.straightThreshold || 25,
