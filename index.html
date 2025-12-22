@@ -636,8 +636,9 @@
         baseline = PARAMS.calibYdiff + PARAMS.calibNoseZ;
       } else {
         // キャリブレーションなしの場合、経験的なデフォルト値
-        // 実測データ分析結果: bent=0, dir=straight の時 combined ≈ 0.07～0.09
-        baseline = 0.08;
+        // 実測データと正解データの比較分析結果から算出
+        // bent=0, dir=straight (正しい姿勢) の時 combined ≈ 0.065～0.075
+        baseline = 0.07;
       }
 
       // 現在の値
@@ -646,13 +647,17 @@
       // 差分を角度に変換
       // baselineより小さい = 顔が下向き = 首が前傾（プラスの角度）
       // baselineより大きい = 顔が上向き = 首が後傾（マイナスの角度）
-      // 実測データから調整: 差分0.09で約45度、差分0.06で約30度
+      //
+      // 正解データとの比較から算出した係数:
+      // - bent=1 (combined≈0.01): neckAngle≈60° → 係数950
+      // - bent=0 (combined≈0.065): neckAngle≈5° → 係数950
+      // - combined最小(-0.008): neckAngle≈74° (正解データ最大値76.8°に対応)
       const diff = baseline - current;
-      const neckAngle = diff * 500; // 係数500で角度に変換（実測値に基づく）
+      const neckAngle = diff * 950; // 係数950で角度に変換（正解データに基づく）
 
-      // 異常値をクリップ（-30度〜90度の範囲）
-      // -30度 = 上を向いている、90度 = 完全に下を向いている
-      return Math.max(-30, Math.min(90, neckAngle));
+      // 異常値をクリップ（-40度〜90度の範囲）
+      // -40度 = かなり上を向いている、90度 = 完全に下を向いている
+      return Math.max(-40, Math.min(90, neckAngle));
     }
 
     // ★ 顔向き：yDiff + noseZ で判定（ヒステリシス）★感度調整対応
