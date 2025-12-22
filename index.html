@@ -629,28 +629,30 @@
     function calculateNeckAngle() {
       if (sYdiff == null || sNoseZ == null) return 0;
 
-      // 顔の向き成分（yDiff + noseZ）を取得
-      let combined;
+      // ベースライン値（良い姿勢の時のyDiff + noseZ）
+      let baseline;
       if (PARAMS.calibYdiff != null && PARAMS.calibNoseZ != null) {
-        combined = (sYdiff - PARAMS.calibYdiff) + (sNoseZ - PARAMS.calibNoseZ);
+        // キャリブレーション済みの場合は、その値をベースラインとする
+        baseline = PARAMS.calibYdiff + PARAMS.calibNoseZ;
       } else {
-        combined = (sYdiff ?? 0) + (sNoseZ ?? 0);
+        // キャリブレーションなしの場合、経験的なデフォルト値
+        // 実測データ分析結果: bent=0, dir=straight の時 combined ≈ 0.07～0.09
+        baseline = 0.08;
       }
 
-      // combined値を角度に変換（経験的な係数）
-      // 負の値 = 下向き（前傾）、正の値 = 上向き（後傾）
-      // combinedの変化量 0.1 ≈ 約30度の首の傾きに相当（経験則）
-      const neckTiltFromFace = -combined * 300; // 下向き時にプラスになるよう反転
+      // 現在の値
+      const current = sYdiff + sNoseZ;
 
-      // スマホの傾き（Pitch）を考慮
-      // スマホが寝ている（Pitch大）場合、首が曲がりやすい
-      const deviceTilt = Math.abs(sPitch);
+      // 差分を角度に変換
+      // baselineより小さい = 顔が下向き = 首が前傾（プラスの角度）
+      // baselineより大きい = 顔が上向き = 首が後傾（マイナスの角度）
+      // 実測データから調整: 差分0.09で約45度、差分0.06で約30度
+      const diff = baseline - current;
+      const neckAngle = diff * 500; // 係数500で角度に変換（実測値に基づく）
 
-      // 総合的な首の角度を計算
-      // 顔の傾きを主とし、デバイスの傾きを補正として加える
-      const estimatedAngle = neckTiltFromFace + (deviceTilt * 0.3);
-
-      return estimatedAngle;
+      // 異常値をクリップ（-30度〜90度の範囲）
+      // -30度 = 上を向いている、90度 = 完全に下を向いている
+      return Math.max(-30, Math.min(90, neckAngle));
     }
 
     // ★ 顔向き：yDiff + noseZ で判定（ヒステリシス）★感度調整対応
