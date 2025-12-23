@@ -342,21 +342,21 @@
         <div class="info-panel">
             <div class="angle-display" id="angleDisplay">
                 <div class="angle-value" id="angleValue">--°</div>
-                <div class="angle-label">顔の傾き角度</div>
+                <div class="angle-label">首の下向き角度</div>
             </div>
 
             <div class="warning-message" id="warningMessage">
-                <strong>⚠️ 警告:</strong> 顔が基準値から大きく傾いています。姿勢を正してください。
+                <strong>⚠️ 警告:</strong> 首が曲がっています！姿勢を正してください。
             </div>
 
             <div class="metrics">
                 <div class="metric-card">
                     <div class="metric-value" id="neckAngle">--°</div>
-                    <div class="metric-label">顔の下向き角度</div>
+                    <div class="metric-label">顔の相対角度</div>
                 </div>
                 <div class="metric-card">
                     <div class="metric-value" id="deviceAngle">--°</div>
-                    <div class="metric-label">デバイスの傾き</div>
+                    <div class="metric-label">スマホの傾き</div>
                 </div>
             </div>
 
@@ -416,7 +416,74 @@
         let smoothedNeckAngle = 0;
         const SMOOTHING_FACTOR = 0.3;
         let baselineAngle = null; // キャリブレーション基準角度
-        const WARNING_THRESHOLD = 15; // 警告のしきい値（度）
+        const WARNING_THRESHOLD = 30; // 警告のしきい値（度）- 首が30度以上下を向いたら警告
+
+        // 警告音関連
+        let audioContext = null;
+        let isWarningActive = false;
+        let beepInterval = null;
+
+        // 警告音を初期化
+        function initAudioContext() {
+            if (!audioContext) {
+                try {
+                    audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                } catch (e) {
+                    console.error('AudioContext initialization failed:', e);
+                }
+            }
+        }
+
+        // ビープ音を再生
+        function playBeep() {
+            if (!audioContext) return;
+
+            try {
+                const oscillator = audioContext.createOscillator();
+                const gainNode = audioContext.createGain();
+
+                oscillator.connect(gainNode);
+                gainNode.connect(audioContext.destination);
+
+                oscillator.frequency.value = 880; // A5音
+                oscillator.type = 'sine';
+
+                gainNode.gain.setValueAtTime(0.3, audioContext.currentTime);
+                gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.3);
+
+                oscillator.start(audioContext.currentTime);
+                oscillator.stop(audioContext.currentTime + 0.3);
+            } catch (e) {
+                console.error('Beep playback failed:', e);
+            }
+        }
+
+        // 警告音のループを開始
+        function startWarningSound() {
+            if (isWarningActive) return;
+
+            initAudioContext();
+            if (!audioContext) return;
+
+            isWarningActive = true;
+            playBeep(); // 最初の1回
+
+            // 1秒ごとに鳴らす
+            beepInterval = setInterval(() => {
+                if (isWarningActive) {
+                    playBeep();
+                }
+            }, 1000);
+        }
+
+        // 警告音を停止
+        function stopWarningSound() {
+            isWarningActive = false;
+            if (beepInterval) {
+                clearInterval(beepInterval);
+                beepInterval = null;
+            }
+        }
 
         // MediaPipe Face Meshのセットアップ
         function setupFaceMesh() {
@@ -459,19 +526,19 @@
                 drawConnectors(canvasCtx, landmarks, FACEMESH_LEFT_EYE, { color: '#30FF30' });
                 drawConnectors(canvasCtx, landmarks, FACEMESH_FACE_OVAL, { color: '#E0E0E0' });
 
-                // 顔の角度を計算
+                // 顔の角度を計算（カメラに対する相対角度）
                 const faceAngle = calculateFaceAngle(landmarks);
                 lastFaceAngle = faceAngle;
 
-                // 顔の向き（下向き角度）を計算
-                const faceDirection = calculateFaceDirection(faceAngle, deviceOrientation);
+                // 実際の首の角度を計算（スマホの角度を加味した絶対角度）
+                const neckAngle = calculateNeckAngle(faceAngle, deviceOrientation);
 
                 // 平滑化
                 smoothedFaceAngle = smoothedFaceAngle * (1 - SMOOTHING_FACTOR) + faceAngle * SMOOTHING_FACTOR;
-                smoothedNeckAngle = smoothedNeckAngle * (1 - SMOOTHING_FACTOR) + faceDirection * SMOOTHING_FACTOR;
+                smoothedNeckAngle = smoothedNeckAngle * (1 - SMOOTHING_FACTOR) + neckAngle * SMOOTHING_FACTOR;
 
-                // UIを更新
-                updateUI(smoothedFaceAngle, smoothedNeckAngle, deviceOrientation.beta);
+                // UIを更新（首の角度を使用）
+                updateUI(smoothedNeckAngle, smoothedFaceAngle, deviceOrientation.beta);
 
                 // 重要なポイントを描画
                 drawKeyPoints(canvasCtx, landmarks, canvasElement.width, canvasElement.height);
@@ -516,23 +583,30 @@
             return avgAngle;
         }
 
-        // 実際の顔の向き（下向き角度）を計算
-        function calculateFaceDirection(faceAngle, deviceOrientation) {
+        // 実際の首の角度を計算（スマホの角度を加味）
+        function calculateNeckAngle(faceAngle, deviceOrientation) {
             // デバイスのベータ角度（前後の傾き）
-            // beta: 90 = デバイスが立っている, 0 = デバイスが平面
-            let deviceTilt = deviceOrientation.beta || 0;
+            // beta = 90度: デバイスが垂直（立っている）
+            // beta = 0度: デバイスが水平（寝ている）
+            let deviceBeta = deviceOrientation.beta || 90;
 
-            // デバイスが立っている状態(90度)を基準にする
-            // デバイスが前に傾くほど、顔の下向き角度も増える
-            let deviceAngleContribution = 90 - deviceTilt;
+            // スマホの傾き補正
+            // スマホが水平に近いほど、首の下向き角度が大きくなる
+            // deviceBeta = 90（垂直）→ 補正 = 0度
+            // deviceBeta = 0（水平）→ 補正 = 90度
+            let deviceAngleContribution = 90 - deviceBeta;
 
-            // 実際の顔の向き = 顔の下向き角度 + デバイスの前傾角度
-            let faceDirection = faceAngle + deviceAngleContribution;
+            // 実際の首の下向き角度 = 顔のピッチ角度 + スマホの傾き補正
+            // 例：スマホが水平（beta=0）で顔がカメラに正面（faceAngle=0）
+            //     → 実際の首の角度 = 0 + 90 = 90度（真下を向いている）
+            // 例：スマホが垂直（beta=90）で顔がカメラに正面（faceAngle=0）
+            //     → 実際の首の角度 = 0 + 0 = 0度（正面を向いている）
+            let neckAngle = faceAngle + deviceAngleContribution;
 
-            // 0度を基準に正規化（まっすぐ前を見ている状態が0度）
-            faceDirection = Math.max(0, faceDirection);
+            // 0度以上に制限（マイナスにはならない）
+            neckAngle = Math.max(0, neckAngle);
 
-            return faceDirection;
+            return neckAngle;
         }
 
         // 重要なポイントを描画
@@ -557,36 +631,41 @@
         }
 
         // UIを更新
-        function updateUI(faceAngle, neckAngle, deviceBeta) {
+        function updateUI(neckAngle, faceAngle, deviceBeta) {
             const angleValue = document.getElementById('angleValue');
             const neckAngleEl = document.getElementById('neckAngle');
             const deviceAngleEl = document.getElementById('deviceAngle');
             const angleDisplay = document.getElementById('angleDisplay');
             const warningMessage = document.getElementById('warningMessage');
 
-            // メイン表示：顔の傾き角度
-            angleValue.textContent = Math.round(faceAngle) + '°';
+            // メイン表示：実際の首の下向き角度
+            angleValue.textContent = Math.round(neckAngle) + '°';
 
             // サブメトリクス
-            neckAngleEl.textContent = Math.round(neckAngle) + '°';
-            deviceAngleEl.textContent = Math.round(90 - (deviceBeta || 90)) + '°';
+            neckAngleEl.textContent = Math.round(faceAngle) + '°'; // 顔のカメラに対する角度
+            deviceAngleEl.textContent = Math.round(90 - (deviceBeta || 90)) + '°'; // スマホの傾き
 
-            // キャリブレーションされている場合は基準値からの差分で警告
-            let shouldWarn = false;
+            // 首が曲がっているかを判定
+            let isBent = false;
             if (baselineAngle !== null) {
-                const deviation = Math.abs(faceAngle - baselineAngle);
-                shouldWarn = deviation >= WARNING_THRESHOLD;
+                // キャリブレーション済み：基準値からの差分で判定
+                const deviation = neckAngle - baselineAngle;
+                isBent = deviation >= WARNING_THRESHOLD;
             } else {
-                // キャリブレーションされていない場合は絶対値で判定
-                shouldWarn = Math.abs(faceAngle) >= 30;
+                // キャリブレーションなし：絶対値で判定
+                // 首が30度以上下を向いていたら警告
+                isBent = neckAngle >= WARNING_THRESHOLD;
             }
 
-            if (shouldWarn) {
+            // 警告表示と音の制御
+            if (isBent) {
                 angleDisplay.classList.add('warning');
                 warningMessage.classList.add('active');
+                startWarningSound(); // 警告音を開始
             } else {
                 angleDisplay.classList.remove('warning');
                 warningMessage.classList.remove('active');
+                stopWarningSound(); // 警告音を停止
             }
         }
 
@@ -669,6 +748,9 @@
             document.getElementById('status').textContent = '初期化中...';
             document.getElementById('startBtn').disabled = true;
 
+            // AudioContextを初期化（ユーザー操作直後）
+            initAudioContext();
+
             try {
                 // Face Meshをセットアップ
                 setupFaceMesh();
@@ -711,6 +793,9 @@
                 videoElement.srcObject.getTracks().forEach(track => track.stop());
             }
 
+            // 警告音を停止
+            stopWarningSound();
+
             isRunning = false;
             document.getElementById('status').textContent = '停止しました';
             document.getElementById('startBtn').disabled = false;
@@ -719,25 +804,26 @@
 
         // キャリブレーション
         function calibrate() {
-            if (smoothedFaceAngle === 0) {
+            if (smoothedNeckAngle === 0) {
                 alert('顔が検出されていません。カメラを開始してから再度お試しください。');
                 return;
             }
 
-            baselineAngle = smoothedFaceAngle;
+            // 正しい姿勢での首の角度を基準として保存
+            baselineAngle = smoothedNeckAngle;
             document.getElementById('baselineAngle').textContent = Math.round(baselineAngle) + '°';
 
             // ローカルストレージに保存
-            localStorage.setItem('faceAngleBaseline', baselineAngle);
+            localStorage.setItem('neckAngleBaseline', baselineAngle);
 
-            alert('基準角度を設定しました: ' + Math.round(baselineAngle) + '°');
+            alert('基準角度を設定しました: ' + Math.round(baselineAngle) + '°\n現在の首の角度を正しい姿勢として記憶しました。');
         }
 
         // キャリブレーションのリセット
         function resetCalibration() {
             baselineAngle = null;
             document.getElementById('baselineAngle').textContent = '未設定';
-            localStorage.removeItem('faceAngleBaseline');
+            localStorage.removeItem('neckAngleBaseline');
             alert('基準角度をリセットしました。');
         }
 
@@ -789,11 +875,16 @@
             document.getElementById('status').textContent = '準備完了。「開始」ボタンを押してください。';
 
             // 保存された基準角度を読み込む
-            const savedBaseline = localStorage.getItem('faceAngleBaseline');
+            const savedBaseline = localStorage.getItem('neckAngleBaseline');
             if (savedBaseline) {
                 baselineAngle = parseFloat(savedBaseline);
                 document.getElementById('baselineAngle').textContent = Math.round(baselineAngle) + '°';
             }
+
+            // AudioContextの初期化（ユーザー操作後に実行）
+            document.addEventListener('click', () => {
+                initAudioContext();
+            }, { once: true });
         });
     </script>
 </body>
